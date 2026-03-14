@@ -109,6 +109,7 @@ def get_transcript(video_id, language):
             # Build session with real browser headers + ScraperAPI proxy
             session = requests.Session()
             session.headers.update(get_random_headers())
+            session.verify = False
 
             if proxies:
                 session.proxies.update(proxies)
