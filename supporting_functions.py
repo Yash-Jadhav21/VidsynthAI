@@ -30,12 +30,6 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0",
 ]
 
-# =========================
-# OPTIONAL PROXIES
-# Leave empty [] if none
-# =========================
-PROXIES = []
-
 
 def get_random_headers():
     return {
@@ -53,34 +47,21 @@ def get_random_headers():
     }
 
 
-def get_random_proxy():
-    if not PROXIES:
-        return None
-    proxy = random.choice(PROXIES)
-    return {"http": proxy, "https": proxy}
+def human_delay(min_sec=1.0, max_sec=3.0):
+    time.sleep(random.uniform(min_sec, max_sec))
 
 
-def human_delay(min_sec=1.5, max_sec=4.0):
-    delay = random.uniform(min_sec, max_sec)
-    time.sleep(delay)
-
-
-def get_cookie_file():
+def get_scraper_proxy():
     """
-    Reads YouTube cookies from Streamlit secrets
-    and writes them to a temp file.
-    Returns the file path or None if not configured.
+    Builds ScraperAPI proxy URL from Streamlit secrets.
+    Returns proxy dict or None if key not found.
     """
     try:
-        cookies_content = st.secrets["youtube_cookies"]["contents"]
-        if cookies_content:
-            cookie_file = "/tmp/yt_cookies.txt"
-            with open(cookie_file, "w") as f:
-                f.write(cookies_content)
-            return cookie_file
+        scraper_key = st.secrets["SCRAPER_API_KEY"]
+        proxy_url = f"http://scraperapi:{scraper_key}@proxy-server.scraperapi.com:8001"
+        return {"http": proxy_url, "https": proxy_url}
     except Exception:
-        pass
-    return None
+        return None
 
 
 # =========================
@@ -107,45 +88,33 @@ def extract_video_id(url):
 
 # =========================
 # GET TRANSCRIPT
-# — uses cookies from secrets
+# — ScraperAPI proxy
 # — random user agent
 # — human-like delays
 # — retries up to 3 times
+# — cached after success
 # =========================
 @st.cache_data(show_spinner=False)
 def get_transcript(video_id, language):
     max_retries = 3
-
-    # Get cookie file from Streamlit secrets
-    cookie_file = get_cookie_file()
+    proxies = get_scraper_proxy()
 
     for attempt in range(max_retries):
         try:
-            # Human-like delay before each attempt
             if attempt == 0:
                 human_delay(1.0, 2.5)
             else:
                 human_delay(3.0, 6.0)
 
-            # Build session with real browser headers
+            # Build session with real browser headers + ScraperAPI proxy
             session = requests.Session()
             session.headers.update(get_random_headers())
 
-            proxy = get_random_proxy()
-            if proxy:
-                session.proxies.update(proxy)
+            if proxies:
+                session.proxies.update(proxies)
 
             ytt_api = YouTubeTranscriptApi(http_client=session)
-
-            # Fetch with cookies if available
-            if cookie_file:
-                transcript = ytt_api.fetch(
-                    video_id,
-                    languages=[language],
-                    cookies=cookie_file
-                )
-            else:
-                transcript = ytt_api.fetch(video_id, languages=[language])
+            transcript = ytt_api.fetch(video_id, languages=[language])
 
             # Small delay after fetching
             human_delay(0.5, 1.5)
@@ -161,13 +130,13 @@ def get_transcript(video_id, language):
                 time.sleep(wait)
             else:
                 if "blocked" in error_msg or "429" in error_msg or "too many" in error_msg:
-                    st.error("🚫 YouTube is blocking this server. Please refresh your cookies in Streamlit Secrets.")
+                    st.error("🚫 YouTube is blocking requests. Check your ScraperAPI key in Streamlit Secrets.")
                 elif "no transcript" in error_msg or "not available" in error_msg:
                     st.error("📭 No transcript available for this video. The video may not have captions.")
                 elif "private" in error_msg:
                     st.error("🔒 This video is private or unavailable.")
                 elif "parsable" in error_msg:
-                    st.error("🚫 YouTube blocked this request. Please refresh your cookies in Streamlit Secrets.")
+                    st.error("🚫 YouTube blocked this request. Check your ScraperAPI key.")
                 else:
                     st.error(f"❌ Failed after {max_retries} attempts: {e}")
                 return None
