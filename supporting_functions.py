@@ -20,7 +20,6 @@ TRANSCRIPT_LIMIT = 15000
 
 # =========================
 # REAL BROWSER USER AGENTS
-# rotated randomly each call
 # =========================
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -32,18 +31,13 @@ USER_AGENTS = [
 ]
 
 # =========================
-# OPTIONAL: ADD YOUR PROXIES
-# Leave empty list [] if none
-# Format: "http://user:pass@host:port"
+# OPTIONAL PROXIES
+# Leave empty [] if none
 # =========================
-PROXIES = [
-    # "http://user:password@proxy-host:port",
-    # "http://user:password@proxy-host2:port",
-]
+PROXIES = []
 
 
 def get_random_headers():
-    """Returns headers that mimic a real browser request."""
     return {
         "User-Agent": random.choice(USER_AGENTS),
         "Accept-Language": "en-US,en;q=0.9",
@@ -60,7 +54,6 @@ def get_random_headers():
 
 
 def get_random_proxy():
-    """Returns a random proxy dict or None if no proxies configured."""
     if not PROXIES:
         return None
     proxy = random.choice(PROXIES)
@@ -68,14 +61,30 @@ def get_random_proxy():
 
 
 def human_delay(min_sec=1.5, max_sec=4.0):
-    """Waits a random amount of time to mimic human browsing speed."""
     delay = random.uniform(min_sec, max_sec)
     time.sleep(delay)
 
 
+def get_cookie_file():
+    """
+    Reads YouTube cookies from Streamlit secrets
+    and writes them to a temp file.
+    Returns the file path or None if not configured.
+    """
+    try:
+        cookies_content = st.secrets["youtube_cookies"]["contents"]
+        if cookies_content:
+            cookie_file = "/tmp/yt_cookies.txt"
+            with open(cookie_file, "w") as f:
+                f.write(cookies_content)
+            return cookie_file
+    except Exception:
+        pass
+    return None
+
+
 # =========================
-# LLM — cached so it's only
-# created once per session
+# LLM — cached once per session
 # =========================
 @st.cache_resource
 def get_llm():
@@ -98,26 +107,27 @@ def extract_video_id(url):
 
 # =========================
 # GET TRANSCRIPT
+# — uses cookies from secrets
 # — random user agent
-# — optional proxy
-# — human-like delay
+# — human-like delays
 # — retries up to 3 times
-# — cached after success
 # =========================
 @st.cache_data(show_spinner=False)
 def get_transcript(video_id, language):
     max_retries = 3
 
+    # Get cookie file from Streamlit secrets
+    cookie_file = get_cookie_file()
+
     for attempt in range(max_retries):
         try:
-            # Wait before each attempt — looks like a human
-            # First attempt: short wait, retries: longer wait
+            # Human-like delay before each attempt
             if attempt == 0:
                 human_delay(1.0, 2.5)
             else:
                 human_delay(3.0, 6.0)
 
-            # Build a session with real browser headers
+            # Build session with real browser headers
             session = requests.Session()
             session.headers.update(get_random_headers())
 
@@ -125,15 +135,22 @@ def get_transcript(video_id, language):
             if proxy:
                 session.proxies.update(proxy)
 
-            # Pass the session to YouTubeTranscriptApi
             ytt_api = YouTubeTranscriptApi(http_client=session)
-            transcript = ytt_api.fetch(video_id, languages=[language])
 
-            # Small delay after fetching — like a human reading the page
+            # Fetch with cookies if available
+            if cookie_file:
+                transcript = ytt_api.fetch(
+                    video_id,
+                    languages=[language],
+                    cookies=cookie_file
+                )
+            else:
+                transcript = ytt_api.fetch(video_id, languages=[language])
+
+            # Small delay after fetching
             human_delay(0.5, 1.5)
 
-            full_transcript = " ".join([i.text for i in transcript])
-            return full_transcript
+            return " ".join([i.text for i in transcript])
 
         except Exception as e:
             error_msg = str(e).lower()
@@ -143,15 +160,16 @@ def get_transcript(video_id, language):
                 st.warning(f"⚠️ Attempt {attempt + 1} failed. Retrying in {wait}s...")
                 time.sleep(wait)
             else:
-                # All retries exhausted
                 if "blocked" in error_msg or "429" in error_msg or "too many" in error_msg:
-                    st.error("🚫 YouTube is blocking requests from this server. Try using a proxy or run locally.")
+                    st.error("🚫 YouTube is blocking this server. Please refresh your cookies in Streamlit Secrets.")
                 elif "no transcript" in error_msg or "not available" in error_msg:
                     st.error("📭 No transcript available for this video. The video may not have captions.")
                 elif "private" in error_msg:
                     st.error("🔒 This video is private or unavailable.")
+                elif "parsable" in error_msg:
+                    st.error("🚫 YouTube blocked this request. Please refresh your cookies in Streamlit Secrets.")
                 else:
-                    st.error(f"❌ Failed to fetch transcript after {max_retries} attempts: {e}")
+                    st.error(f"❌ Failed after {max_retries} attempts: {e}")
                 return None
 
 
